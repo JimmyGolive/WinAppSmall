@@ -170,7 +170,7 @@ public partial class Form1 : Form
         {
             e.Cancel = true;
             this.Hide();
-            // Removed notification to prevent excessive balloon tips
+            // ShowBalloonTip removed to prevent excessive notifications when minimizing to system tray
         }
         else
         {

@@ -180,7 +180,7 @@ public class WindowMonitor : IDisposable
                     {
                         // Process is still alive but window was closed
                         // This might mean user tried to close it
-                        // Removed notification to prevent excessive balloon tips
+                        // StatusChanged event removed to prevent excessive balloon tip notifications during window close detection
                     }
                 }
                 catch (ArgumentException)
@@ -201,7 +201,7 @@ public class WindowMonitor : IDisposable
             if (IsWindow(hwnd))
             {
                 ShowWindow(hwnd, SW_MINIMIZE);
-                // Removed notification to prevent excessive balloon tips
+                // StatusChanged event removed to prevent excessive balloon tip notifications during window minimization
             }
         }
     }
@@ -281,7 +281,7 @@ public class WindowMonitor : IDisposable
                         // Window is being hidden but not minimized - might be a close attempt
                         // Minimize it instead
                         ShowWindow(hwnd, SW_MINIMIZE);
-                        // Removed notification to prevent excessive balloon tips
+                        // StatusChanged event removed to prevent excessive balloon tip notifications during close operation interception
                     }
                     else if (eventType == "destroy")
                     {
@@ -291,7 +291,7 @@ public class WindowMonitor : IDisposable
                         if (newHandle != IntPtr.Zero && newHandle != hwnd && IsWindow(newHandle))
                         {
                             ShowWindow(newHandle, SW_MINIMIZE);
-                            // Removed notification to prevent excessive balloon tips
+                            // StatusChanged event removed to prevent excessive balloon tip notifications when minimizing new window handles
                         }
                     }
                 }
