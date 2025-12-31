@@ -136,10 +136,16 @@ public class WindowMonitor : IDisposable
                             currentWindows[process.MainWindowHandle] = info;
                         }
                     }
-                    catch { }
+                    catch (InvalidOperationException)
+                    {
+                        // Process may have exited between enumeration and access - ignore
+                    }
                 }
             }
-            catch { }
+            catch (InvalidOperationException)
+            {
+                // Process enumeration may fail if program is not running - ignore
+            }
         }
 
         lock (lockObject)
@@ -170,14 +176,17 @@ public class WindowMonitor : IDisposable
                 try
                 {
                     var process = Process.GetProcessById((int)info.ProcessId);
-                    if (process != null && !process.HasExited)
+                    if (!process.HasExited)
                     {
                         // Process is still alive but window was closed
                         // This might mean user tried to close it
                         StatusChanged?.Invoke(this, $"偵測到 {info.ProcessName} 視窗關閉嘗試");
                     }
                 }
-                catch { }
+                catch (ArgumentException)
+                {
+                    // Process no longer exists - ignore
+                }
             }
             else if (info.WasVisible && !IsWindowVisible(hwnd) && !IsIconic(hwnd))
             {
@@ -272,7 +281,7 @@ public class WindowMonitor : IDisposable
             {
                 // Check if the process is still running
                 var process = Process.GetProcessById((int)processId);
-                if (process != null && !process.HasExited)
+                if (!process.HasExited)
                 {
                     // Check if window is being hidden/destroyed but not minimized
                     if (eventType == "hide" && !IsIconic(hwnd) && IsWindow(hwnd))
@@ -295,7 +304,10 @@ public class WindowMonitor : IDisposable
                     }
                 }
             }
-            catch { }
+            catch (ArgumentException)
+            {
+                // Process no longer exists - ignore
+            }
         }
     }
 
