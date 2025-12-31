@@ -170,7 +170,7 @@ public partial class Form1 : Form
         {
             e.Cancel = true;
             this.Hide();
-            notifyIcon.ShowBalloonTip(2000, "WinAppSmall", "程式已最小化到系統托盤", ToolTipIcon.Info);
+            // ShowBalloonTip removed to prevent excessive notifications when minimizing to system tray
         }
         else
         {
