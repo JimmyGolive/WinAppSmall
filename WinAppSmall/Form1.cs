@@ -37,12 +37,13 @@ public partial class Form1 : Form
     {
         if (windowMonitor != null)
         {
-            windowMonitor.StatusChanged -= WindowMonitor_StatusChanged;
-            windowMonitor.Dispose();
+            windowMonitor.UpdateMonitoredPrograms(monitoredPrograms);
         }
-        
-        windowMonitor = new WindowMonitor(monitoredPrograms);
-        windowMonitor.StatusChanged += WindowMonitor_StatusChanged;
+        else
+        {
+            windowMonitor = new WindowMonitor(monitoredPrograms);
+            windowMonitor.StatusChanged += WindowMonitor_StatusChanged;
+        }
     }
 
     private void WindowMonitor_StatusChanged(object? sender, string message)

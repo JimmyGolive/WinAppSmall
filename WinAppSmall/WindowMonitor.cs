@@ -9,6 +9,7 @@ public class WindowMonitor : IDisposable
     private HashSet<string> monitoredPrograms;
     private System.Windows.Forms.Timer timer;
     private Dictionary<IntPtr, WindowInfo> monitoredWindows = new Dictionary<IntPtr, WindowInfo>();
+    private readonly object lockObject = new object();
 
     private class WindowInfo
     {
@@ -98,7 +99,7 @@ public class WindowMonitor : IDisposable
 
         // Timer to track windows and detect when they're about to close
         timer = new System.Windows.Forms.Timer();
-        timer.Interval = 500; // Check every 500ms for faster response
+        timer.Interval = 1000; // Check every 1 second for better performance
         timer.Tick += Timer_Tick;
         timer.Start();
         
@@ -141,15 +142,24 @@ public class WindowMonitor : IDisposable
             catch { }
         }
 
-        monitoredWindows = currentWindows;
+        lock (lockObject)
+        {
+            monitoredWindows = currentWindows;
+        }
     }
 
     private void CheckForClosedWindows()
     {
         // Check if any monitored windows have become invisible or closed
         var windowsToRestore = new List<IntPtr>();
+        Dictionary<IntPtr, WindowInfo> currentMonitoredWindows;
 
-        foreach (var kvp in monitoredWindows.ToList())
+        lock (lockObject)
+        {
+            currentMonitoredWindows = new Dictionary<IntPtr, WindowInfo>(monitoredWindows);
+        }
+
+        foreach (var kvp in currentMonitoredWindows)
         {
             var hwnd = kvp.Key;
             var info = kvp.Value;
@@ -182,8 +192,15 @@ public class WindowMonitor : IDisposable
             if (IsWindow(hwnd))
             {
                 ShowWindow(hwnd, SW_MINIMIZE);
-                var programName = monitoredWindows[hwnd].ProcessName;
-                StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
+                
+                lock (lockObject)
+                {
+                    if (monitoredWindows.ContainsKey(hwnd))
+                    {
+                        var programName = monitoredWindows[hwnd].ProcessName;
+                        StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
+                    }
+                }
             }
         }
     }
@@ -227,21 +244,24 @@ public class WindowMonitor : IDisposable
         bool isMonitored = false;
         string programName = "";
 
-        if (monitoredWindows.ContainsKey(hwnd))
+        lock (lockObject)
         {
-            isMonitored = true;
-            programName = monitoredWindows[hwnd].ProcessName;
-        }
-        else
-        {
-            // Check by process ID
-            foreach (var kvp in monitoredWindows)
+            if (monitoredWindows.ContainsKey(hwnd))
             {
-                if (kvp.Value.ProcessId == processId)
+                isMonitored = true;
+                programName = monitoredWindows[hwnd].ProcessName;
+            }
+            else
+            {
+                // Check by process ID
+                foreach (var kvp in monitoredWindows)
                 {
-                    isMonitored = true;
-                    programName = kvp.Value.ProcessName;
-                    break;
+                    if (kvp.Value.ProcessId == processId)
+                    {
+                        isMonitored = true;
+                        programName = kvp.Value.ProcessName;
+                        break;
+                    }
                 }
             }
         }
@@ -281,7 +301,16 @@ public class WindowMonitor : IDisposable
 
     public int GetMonitoredWindowCount()
     {
-        return monitoredWindows.Count;
+        lock (lockObject)
+        {
+            return monitoredWindows.Count;
+        }
+    }
+
+    public void UpdateMonitoredPrograms(HashSet<string> programs)
+    {
+        monitoredPrograms = programs;
+        UpdateMonitoredWindows();
     }
 
     public void Dispose()
@@ -289,22 +318,25 @@ public class WindowMonitor : IDisposable
         timer?.Stop();
         timer?.Dispose();
         
-        if (hookHandleDestroy != IntPtr.Zero)
+        lock (lockObject)
         {
-            UnhookWinEvent(hookHandleDestroy);
-            hookHandleDestroy = IntPtr.Zero;
-        }
-        
-        if (hookHandleHide != IntPtr.Zero)
-        {
-            UnhookWinEvent(hookHandleHide);
-            hookHandleHide = IntPtr.Zero;
-        }
+            if (hookHandleDestroy != IntPtr.Zero)
+            {
+                UnhookWinEvent(hookHandleDestroy);
+                hookHandleDestroy = IntPtr.Zero;
+            }
+            
+            if (hookHandleHide != IntPtr.Zero)
+            {
+                UnhookWinEvent(hookHandleHide);
+                hookHandleHide = IntPtr.Zero;
+            }
 
-        if (hookHandleMinimizeStart != IntPtr.Zero)
-        {
-            UnhookWinEvent(hookHandleMinimizeStart);
-            hookHandleMinimizeStart = IntPtr.Zero;
+            if (hookHandleMinimizeStart != IntPtr.Zero)
+            {
+                UnhookWinEvent(hookHandleMinimizeStart);
+                hookHandleMinimizeStart = IntPtr.Zero;
+            }
         }
     }
 }
