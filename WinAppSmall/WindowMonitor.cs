@@ -180,7 +180,7 @@ public class WindowMonitor : IDisposable
                     {
                         // Process is still alive but window was closed
                         // This might mean user tried to close it
-                        StatusChanged?.Invoke(this, $"偵測到 {info.ProcessName} 視窗關閉嘗試");
+                        // Removed notification to prevent excessive balloon tips
                     }
                 }
                 catch (ArgumentException)
@@ -201,15 +201,7 @@ public class WindowMonitor : IDisposable
             if (IsWindow(hwnd))
             {
                 ShowWindow(hwnd, SW_MINIMIZE);
-                
-                lock (lockObject)
-                {
-                    if (monitoredWindows.ContainsKey(hwnd))
-                    {
-                        var programName = monitoredWindows[hwnd].ProcessName;
-                        StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
-                    }
-                }
+                // Removed notification to prevent excessive balloon tips
             }
         }
     }
@@ -289,7 +281,7 @@ public class WindowMonitor : IDisposable
                         // Window is being hidden but not minimized - might be a close attempt
                         // Minimize it instead
                         ShowWindow(hwnd, SW_MINIMIZE);
-                        StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
+                        // Removed notification to prevent excessive balloon tips
                     }
                     else if (eventType == "destroy")
                     {
@@ -299,7 +291,7 @@ public class WindowMonitor : IDisposable
                         if (newHandle != IntPtr.Zero && newHandle != hwnd && IsWindow(newHandle))
                         {
                             ShowWindow(newHandle, SW_MINIMIZE);
-                            StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
+                            // Removed notification to prevent excessive balloon tips
                         }
                     }
                 }
