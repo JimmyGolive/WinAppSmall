@@ -8,7 +8,14 @@ public class WindowMonitor : IDisposable
 {
     private HashSet<string> monitoredPrograms;
     private System.Windows.Forms.Timer timer;
-    private Dictionary<IntPtr, uint> monitoredWindows = new Dictionary<IntPtr, uint>();
+    private Dictionary<IntPtr, WindowInfo> monitoredWindows = new Dictionary<IntPtr, WindowInfo>();
+
+    private class WindowInfo
+    {
+        public uint ProcessId { get; set; }
+        public string ProcessName { get; set; } = "";
+        public bool WasVisible { get; set; }
+    }
 
     // Windows API declarations
     [DllImport("user32.dll")]
@@ -30,37 +37,41 @@ public class WindowMonitor : IDisposable
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+    private static extern int GetWindowTextLength(IntPtr hWnd);
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumThreadWindows(uint dwThreadId, EnumThreadDelegate lpfn, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetParent(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern long GetWindowLong(IntPtr hWnd, int nIndex);
+
     private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
-    private delegate bool EnumThreadDelegate(IntPtr hWnd, IntPtr lParam);
-
     private const uint EVENT_OBJECT_DESTROY = 0x8001;
     private const uint EVENT_OBJECT_HIDE = 0x8003;
+    private const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+    private const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const int SW_MINIMIZE = 6;
+    private const int SW_RESTORE = 9;
     private const int SW_SHOW = 5;
-    private const uint GW_OWNER = 4;
+    private const int GWL_STYLE = -16;
+    private const long WS_VISIBLE = 0x10000000L;
 
     private IntPtr hookHandleDestroy = IntPtr.Zero;
     private IntPtr hookHandleHide = IntPtr.Zero;
+    private IntPtr hookHandleMinimizeStart = IntPtr.Zero;
     private WinEventDelegate? hookDelegateDestroy;
     private WinEventDelegate? hookDelegateHide;
+    private WinEventDelegate? hookDelegateMinimizeStart;
 
     public event EventHandler<string>? StatusChanged;
 
@@ -68,19 +79,26 @@ public class WindowMonitor : IDisposable
     {
         monitoredPrograms = programs;
         
-        // Set up hooks
+        // Set up hooks for multiple events
         hookDelegateDestroy = new WinEventDelegate(WinEventProcDestroy);
         hookDelegateHide = new WinEventDelegate(WinEventProcHide);
+        hookDelegateMinimizeStart = new WinEventDelegate(WinEventProcMinimizeStart);
         
+        // Hook destroy event (when window is being closed)
         hookHandleDestroy = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY,
             IntPtr.Zero, hookDelegateDestroy, 0, 0, WINEVENT_OUTOFCONTEXT);
         
+        // Hook hide event (when window is being hidden)
         hookHandleHide = SetWinEventHook(EVENT_OBJECT_HIDE, EVENT_OBJECT_HIDE,
             IntPtr.Zero, hookDelegateHide, 0, 0, WINEVENT_OUTOFCONTEXT);
 
-        // Timer to track windows
+        // Hook minimize start event
+        hookHandleMinimizeStart = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART,
+            IntPtr.Zero, hookDelegateMinimizeStart, 0, 0, WINEVENT_OUTOFCONTEXT);
+
+        // Timer to track windows and detect when they're about to close
         timer = new System.Windows.Forms.Timer();
-        timer.Interval = 1000;
+        timer.Interval = 500; // Check every 500ms for faster response
         timer.Tick += Timer_Tick;
         timer.Start();
         
@@ -90,11 +108,12 @@ public class WindowMonitor : IDisposable
     private void Timer_Tick(object? sender, EventArgs e)
     {
         UpdateMonitoredWindows();
+        CheckForClosedWindows();
     }
 
     private void UpdateMonitoredWindows()
     {
-        var newWindows = new Dictionary<IntPtr, uint>();
+        var currentWindows = new Dictionary<IntPtr, WindowInfo>();
 
         foreach (var programName in monitoredPrograms)
         {
@@ -107,7 +126,13 @@ public class WindowMonitor : IDisposable
                     {
                         if (process.MainWindowHandle != IntPtr.Zero && IsWindow(process.MainWindowHandle))
                         {
-                            newWindows[process.MainWindowHandle] = (uint)process.Id;
+                            var info = new WindowInfo
+                            {
+                                ProcessId = (uint)process.Id,
+                                ProcessName = programName,
+                                WasVisible = IsWindowVisible(process.MainWindowHandle)
+                            };
+                            currentWindows[process.MainWindowHandle] = info;
                         }
                     }
                     catch { }
@@ -116,7 +141,51 @@ public class WindowMonitor : IDisposable
             catch { }
         }
 
-        monitoredWindows = newWindows;
+        monitoredWindows = currentWindows;
+    }
+
+    private void CheckForClosedWindows()
+    {
+        // Check if any monitored windows have become invisible or closed
+        var windowsToRestore = new List<IntPtr>();
+
+        foreach (var kvp in monitoredWindows.ToList())
+        {
+            var hwnd = kvp.Key;
+            var info = kvp.Value;
+
+            if (!IsWindow(hwnd))
+            {
+                // Window no longer exists - try to find new main window for this process
+                try
+                {
+                    var process = Process.GetProcessById((int)info.ProcessId);
+                    if (process != null && !process.HasExited)
+                    {
+                        // Process is still alive but window was closed
+                        // This might mean user tried to close it
+                        StatusChanged?.Invoke(this, $"偵測到 {info.ProcessName} 視窗關閉嘗試");
+                    }
+                }
+                catch { }
+            }
+            else if (info.WasVisible && !IsWindowVisible(hwnd) && !IsIconic(hwnd))
+            {
+                // Window was visible but now is hidden (not minimized)
+                // This might be a close attempt - show it minimized instead
+                windowsToRestore.Add(hwnd);
+            }
+        }
+
+        foreach (var hwnd in windowsToRestore)
+        {
+            if (IsWindow(hwnd))
+            {
+                ShowWindow(hwnd, SW_MINIMIZE);
+                var programName = monitoredWindows[hwnd].ProcessName;
+                StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
+            }
+        }
     }
 
     private void WinEventProcDestroy(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
@@ -139,6 +208,13 @@ public class WindowMonitor : IDisposable
         }
     }
 
+    private void WinEventProcMinimizeStart(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        // When a window starts to minimize - this is OK, user intended to minimize
+        // We don't need to do anything special here
+    }
+
     private void HandleWindowEvent(IntPtr hwnd, string eventType)
     {
         if (!IsWindow(hwnd))
@@ -147,29 +223,59 @@ public class WindowMonitor : IDisposable
         // Check if this window belongs to a monitored process
         GetWindowThreadProcessId(hwnd, out uint processId);
 
-        foreach (var kvp in monitoredWindows)
-        {
-            if (kvp.Value == processId || kvp.Key == hwnd)
-            {
-                try
-                {
-                    var process = Process.GetProcessById((int)kvp.Value);
-                    var programName = process.ProcessName + ".exe";
+        // Check if it's in our monitored windows or if the process is monitored
+        bool isMonitored = false;
+        string programName = "";
 
-                    if (monitoredPrograms.Contains(programName))
+        if (monitoredWindows.ContainsKey(hwnd))
+        {
+            isMonitored = true;
+            programName = monitoredWindows[hwnd].ProcessName;
+        }
+        else
+        {
+            // Check by process ID
+            foreach (var kvp in monitoredWindows)
+            {
+                if (kvp.Value.ProcessId == processId)
+                {
+                    isMonitored = true;
+                    programName = kvp.Value.ProcessName;
+                    break;
+                }
+            }
+        }
+
+        if (isMonitored && !string.IsNullOrEmpty(programName))
+        {
+            try
+            {
+                // Check if the process is still running
+                var process = Process.GetProcessById((int)processId);
+                if (process != null && !process.HasExited)
+                {
+                    // Check if window is being hidden/destroyed but not minimized
+                    if (eventType == "hide" && !IsIconic(hwnd) && IsWindow(hwnd))
                     {
-                        // Instead of closing, minimize the window
-                        if (IsWindowVisible(hwnd))
+                        // Window is being hidden but not minimized - might be a close attempt
+                        // Minimize it instead
+                        ShowWindow(hwnd, SW_MINIMIZE);
+                        StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
+                    }
+                    else if (eventType == "destroy")
+                    {
+                        // Window is being destroyed
+                        // Try to show the main window of the process as minimized if process still exists
+                        var newHandle = process.MainWindowHandle;
+                        if (newHandle != IntPtr.Zero && newHandle != hwnd && IsWindow(newHandle))
                         {
-                            ShowWindow(hwnd, SW_MINIMIZE);
+                            ShowWindow(newHandle, SW_MINIMIZE);
                             StatusChanged?.Invoke(this, $"已攔截 {programName} 的關閉操作，已最小化");
                         }
                     }
                 }
-                catch { }
-                
-                break;
             }
+            catch { }
         }
     }
 
@@ -193,6 +299,12 @@ public class WindowMonitor : IDisposable
         {
             UnhookWinEvent(hookHandleHide);
             hookHandleHide = IntPtr.Zero;
+        }
+
+        if (hookHandleMinimizeStart != IntPtr.Zero)
+        {
+            UnhookWinEvent(hookHandleMinimizeStart);
+            hookHandleMinimizeStart = IntPtr.Zero;
         }
     }
 }
